@@ -1,16 +1,15 @@
 #!/usr/bin/env python
-# -*- coding:utf-8 -*-
+# coding=utf-8
 
+from __future__ import print_function
 import os
 import sys
 import json
-import ast
 import stat
 import sqlite3
 import hashlib
 import threading
 import time
-import qcloud_cos
 import threadpool
 import logging
 import logging.handlers
@@ -18,7 +17,6 @@ from datetime import date
 from qcloud_cos import CosClient
 from qcloud_cos import CosConfig
 from qcloud_cos import UploadFileRequest
-from qcloud_cos import StatFileRequest
 from qcloud_cos import StatFolderRequest
 from qcloud_cos import DelFileRequest
 from qcloud_cos import DelFolderRequest
@@ -28,27 +26,31 @@ from sys import getfilesystemencoding
 
 fs_encoding = getfilesystemencoding()
 
+
 class CosSyncLog(object):
-    @classmethod
-    def set_log(cls, level=logging.INFO, log_name='./log/cos_sync.log'):
-        logger = logging.getLogger('tencent_cos_sync')
-        Rthandler = logging.handlers.RotatingFileHandler(log_name,
-                maxBytes=100*1024*1024, backupCount=20)
-        Rthandler.setLevel(level)
-        formatter = logging.Formatter('''%(asctime)s %(filename)s 
-        [line:%(lineno)d] %(levelname)s %(message)s''')
-        Rthandler.setFormatter(formatter)
-        logger.addHandler(Rthandler)
+    """static class for initializing logger """
+
+    @staticmethod
+    def get_logger(level=logging.INFO, log_name='cos_sync.log'):
+
+        logger = logging.getLogger(__name__)
+        rthandler = logging.handlers.RotatingFileHandler(log_name, maxBytes=100*1024*1024, backupCount=20)
+        rthandler.setLevel(level)
+        formatter = logging.Formatter('''%(asctime)s %(filename)s [line:%(lineno)d] %(levelname)s %(message)s''')
+        rthandler.setFormatter(formatter)
+        logger.addHandler(rthandler)
         logger.setLevel(logging.INFO) 
         return logger
 
-cos_sync_logger = CosSyncLog.set_log()
+cos_sync_logger = CosSyncLog.get_logger()
+
 
 class CosSyncConfig(object):
+    """Cos Sync Config"""
+    def __init__(self, config_path=u'cos_sync_config.json'):
 
-    def __init__(self, config_path=u'./conf/cos_sync_config.json'):
-        if (not os.path.isfile(config_path)):
-            self.init_config_err = u'config file %s not exist' % (config_path)
+        if not os.path.isfile(config_path):
+            self.init_config_err = u'config file %s not exist' % config_path
             self.init_config_flag = False
             return
 
@@ -63,22 +65,20 @@ class CosSyncConfig(object):
         finally:
             config_file.close()
 
-
-        valid_config_key_arr = [u'appid', u'secret_id', u'secret_key', u'bucket', 
-                u'timeout', u'thread_num', u'local_path', u'cos_path', 
-                u'delete_sync', u'daemon_mode', u'daemon_interval', u'enable_https']
+        valid_config_key_arr = [u'appid', u'secret_id', u'secret_key', u'bucket', u'timeout', u'thread_num', u'local_path', u'cos_path', u'delete_sync', u'daemon_mode', u'daemon_interval', u'enable_https']
 
         for config_key in valid_config_key_arr:
-            if (config_key not in self.config_json.keys()):
-                self.init_config_err = u'config file not contain %s' % (config_key)
+            if config_key not in self.config_json.keys():
+                self.init_config_err = u'config file not contain %s' % config_key
                 self.init_config_flag = False
                 return
+
             config_value = self.config_json[config_key]                            
             if not isinstance(config_value, unicode):                               
-                self.init_config_err = u'config %s value must be unicode str' % (config_key)
+                self.init_config_err = u'config %s value must be unicode str' % config_key
                 self.init_config_flag = False
                 return
-            
+
         try:
             int(self.config_json[u'appid'])
         except:                                                                     
@@ -91,10 +91,7 @@ class CosSyncConfig(object):
             self.init_config_flag = False
             return
 
-
-        self.config_json[u'local_path'] = \
-                os.path.abspath(self.config_json[u'local_path']) \
-                + os.path.sep.decode('utf8')
+        self.config_json[u'local_path'] = os.path.abspath(self.config_json[u'local_path']) + os.path.sep.decode('utf8')
 
         if self.config_json[u'cos_path'][0] != u'/':
             self.init_config_err = u'cos_path must start with bucket root /'
@@ -148,7 +145,7 @@ class CosSyncConfig(object):
             self.init_config_flag = False                                          
             return 
 
-        self.config_json[u'db_path'] = u'./db/db_rec.db'
+        self.config_json[u'db_path'] = u'db_rec.db'
 
         self.init_config_flag = True
         self.init_config_err = u''
@@ -200,6 +197,7 @@ class CosSyncConfig(object):
     def get_db_path(self):
         return self.config_json[u'db_path']
 
+
 class FileStat(object):
     def __init__(self, file_path=None):
         if file_path is None:
@@ -207,7 +205,6 @@ class FileStat(object):
             return
 
         self.valid = True
-
         file_stat = os.stat(file_path)
         self.file_path = file_path
         self.file_mode = file_stat[stat.ST_MODE]
@@ -219,7 +216,8 @@ class FileStat(object):
         return self.valid
 
     def build_md5(self):
-        if (stat.S_ISDIR(self.file_mode)):
+
+        if stat.S_ISDIR(self.file_mode):
             self.md5 = u''
             return
 
@@ -238,8 +236,7 @@ class FileStat(object):
         return md5_hash.hexdigest()
 
     @classmethod
-    def build_stat(cls, file_path=u'', file_size=u'', file_mode=u'', mtime=u'',
-            md5=u''):
+    def build_stat(cls, file_path=u'', file_size=u'', file_mode=u'', mtime=u'', md5=u''):
         file_stat = FileStat()
         file_stat.file_path = file_path
         file_stat.file_size = file_size
@@ -250,21 +247,22 @@ class FileStat(object):
         return file_stat
 
     def compare(self, file_stat):
-        if (stat.S_ISDIR(self.file_mode)):
+        if stat.S_ISDIR(self.file_mode):
             return 0
-        if (self.mtime == file_stat.mtime):
+        if self.mtime == file_stat.mtime:
             return 0
-        if (self.file_size != file_stat.file_size):
+        if self.file_size != file_stat.file_size:
             return 1
         self.md5 = self.build_md5()
-        if (self.md5 != file_stat.md5):
+        if self.md5 != file_stat.md5:
             return 1
         return 0
 
+
 class LocalFileDirInfo(object):
-    def __init__(self, local_path = None):
+    def __init__(self, local_path=None):
         self.file_stat_list = []
-        self.dir_stat_list  = []
+        self.dir_stat_list = []
         if local_path is None:
             return
 
@@ -273,7 +271,7 @@ class LocalFileDirInfo(object):
             return
 
         str_local_path = local_path.encode(fs_encoding)
-        wrong_path_file = open('./log/error_path.log', 'wb')
+        wrong_path_file = open('error_path.log', 'wb')
         for parent, dirnames, filenames in os.walk(str_local_path):
             for filename in filenames:
                 full_path = os.path.join(parent, filename)
@@ -282,7 +280,7 @@ class LocalFileDirInfo(object):
                     full_path.decode(fs_encoding).encode('utf8')
                     os.stat(full_path)  # try to invoke system function
                 except :
-                    print '[illeagl utf8 local path, please rename it] %s' % repr(full_path)
+                    print('[illeagl utf8 local path, please rename it] %s' % repr(full_path))
                     wrong_path_file.write(repr(full_path))
                     wrong_path_file.write('\n')
                     continue
@@ -290,7 +288,7 @@ class LocalFileDirInfo(object):
                 full_path = full_path.decode(fs_encoding)
                 file_stat = FileStat(full_path)
                 if not file_stat.valid:
-                    print "wrong file_stat, full_path:", repr(full_path)
+                    print("wrong file_stat, full_path:", repr(full_path))
                 else:
                     self.file_stat_list.append(file_stat)
 
@@ -300,23 +298,24 @@ class LocalFileDirInfo(object):
                 try:
                     full_path = full_path.decode(fs_encoding)
                 except:
-                    print '[illeagl utf8 local path, please rename it] %s' % repr(full_path)
+                    print('[illeagl utf8 local path, please rename it] %s' % repr(full_path))
                     wrong_path_file.write(repr(full_path))
                     wrong_path_file.write('\n')
                     continue
 
-
                 file_stat = FileStat(full_path)
                 if not file_stat.valid:
-                    print "wrong file_stat, full_path:", repr(full_path)
+                    print("wrong file_stat, full_path:", repr(full_path))
                 else:
                     self.dir_stat_list.append(file_stat)
         wrong_path_file.close()
 
+
 class DbRecord(object):
+
     def __init__(self, db_path, appid, bucket, local_path, cos_path):
         # connect sqlite db
-        self.cx = sqlite3.connect(db_path, check_same_thread = False)
+        self.cx = sqlite3.connect(db_path, check_same_thread=False)
         temp_md5_path = local_path.encode('utf-8') + cos_path.encode('utf-8')
         md5_hash = hashlib.md5()
         md5_hash.update(temp_md5_path)
@@ -343,14 +342,12 @@ class DbRecord(object):
             file_path = element[1]
             file_size = element[2]
             file_mode = element[3]
-            mtime     = element[4]
-            md5       = element[5]
-            if (stat.S_ISREG(file_mode)):
-                self.file_stat_dict[file_path] = FileStat.build_stat(file_path,
-                        file_size, file_mode, mtime, md5)
+            mtime = element[4]
+            md5 = element[5]
+            if stat.S_ISREG(file_mode):
+                self.file_stat_dict[file_path] = FileStat.build_stat(file_path, file_size, file_mode, mtime, md5)
             else:
-                self.dir_stat_dict[file_path] = FileStat.build_stat(file_path,
-                        file_size, file_mode, mtime, md5)
+                self.dir_stat_dict[file_path] = FileStat.build_stat(file_path, file_size, file_mode, mtime, md5)
 
         self.db_lock = threading.Lock()
 
@@ -360,11 +357,11 @@ class DbRecord(object):
             self.db_lock.release()
 
     def update_record(self, file_stat):
-        if (len(file_stat.md5) == 0):
+
+        if len(file_stat.md5) == 0:
             file_stat.md5 = file_stat.build_md5()
 
-        record_tuple = (file_stat.file_path, file_stat.file_size,
-                file_stat.file_mode, file_stat.mtime, file_stat.md5)
+        record_tuple = (file_stat.file_path, file_stat.file_size, file_stat.file_mode, file_stat.mtime, file_stat.md5)
         sql_update_record = u'''
         replace into %s 
         (file_path, file_size, file_mode, mtime, md5) 
@@ -384,23 +381,25 @@ class DbRecord(object):
             self.cx.commit()
             self.db_lock.release()
 
+
 class CosTaskStatics(object):
     def __init__(self):
-        self.lock                   = threading.Lock()
-        self.start_time             = time.time()
-        self.end_time               = time.time()
-        self.create_folder_sum_cnt  = 0
-        self.create_folder_ok_cnt   = 0
+        self.cx = None
+        self.lock = threading.Lock()
+        self.start_time = time.time()
+        self.end_time = time.time()
+        self.create_folder_sum_cnt = 0
+        self.create_folder_ok_cnt = 0
         self.create_folder_fail_cnt = 0
-        self.upload_file_sum_cnt    = 0
-        self.upload_file_ok_cnt     = 0
-        self.upload_file_fail_cnt   = 0
-        self.del_folder_sum_cnt     = 0
-        self.del_folder_ok_cnt      = 0
-        self.del_folder_fail_cnt    = 0
-        self.del_file_sum_cnt       = 0
-        self.del_file_ok_cnt        = 0
-        self.del_file_fail_cnt      = 0
+        self.upload_file_sum_cnt = 0
+        self.upload_file_ok_cnt = 0
+        self.upload_file_fail_cnt = 0
+        self.del_folder_sum_cnt = 0
+        self.del_folder_ok_cnt = 0
+        self.del_folder_fail_cnt = 0
+        self.del_file_sum_cnt = 0
+        self.del_file_ok_cnt = 0
+        self.del_file_fail_cnt = 0
 
     def add_create_folder_ok(self):
         if self.lock.acquire():
@@ -452,25 +451,25 @@ class CosTaskStatics(object):
 
     def begin_collect_statics(self):
         if self.lock.acquire():
-            self.start_time             = time.time()
-            self.create_folder_sum_cnt  = 0
-            self.create_folder_ok_cnt   = 0
+            self.start_time = time.time()
+            self.create_folder_sum_cnt = 0
+            self.create_folder_ok_cnt = 0
             self.create_folder_fail_cnt = 0
-            self.upload_file_sum_cnt    = 0
-            self.upload_file_ok_cnt     = 0
-            self.upload_file_fail_cnt   = 0
-            self.del_folder_sum_cnt     = 0
-            self.del_folder_ok_cnt      = 0
-            self.del_folder_fail_cnt    = 0
-            self.del_file_sum_cnt       = 0
-            self.del_file_ok_cnt        = 0
-            self.del_file_fail_cnt      = 0
+            self.upload_file_sum_cnt = 0
+            self.upload_file_ok_cnt = 0
+            self.upload_file_fail_cnt = 0
+            self.del_folder_sum_cnt = 0
+            self.del_folder_ok_cnt = 0
+            self.del_folder_fail_cnt = 0
+            self.del_file_sum_cnt = 0
+            self.del_file_ok_cnt = 0
+            self.del_file_fail_cnt = 0
             self.lock.release()
 
     def end_collect_statics(self):
         if self.lock.acquire():
             self.end_time = time.time()
-            self.cx = sqlite3.connect("./db/op_record.db")
+            self.cx = sqlite3.connect("op_record.db")
             sql_create_op_table = u'''
             create table if not exists op_record 
             (`id` INTEGER PRIMARY key autoincrement,
@@ -497,15 +496,12 @@ class CosTaskStatics(object):
 
             self.cx.execute(sql_create_op_table)
             self.cx.commit()
-            op_sum_cnt = self.create_folder_sum_cnt + self.del_folder_sum_cnt \
-                    + self.upload_file_sum_cnt + self.del_file_sum_cnt
-            op_ok_cnt = self.create_folder_ok_cnt + self.del_folder_ok_cnt \
-                    + self.upload_file_ok_cnt + self.del_file_ok_cnt
-            op_fail_cnt = self.create_folder_fail_cnt + self.del_folder_fail_cnt \
-                    + self.upload_file_fail_cnt + self.del_file_fail_cnt
-            if (op_sum_cnt == op_ok_cnt):
+            op_sum_cnt = self.create_folder_sum_cnt + self.del_folder_sum_cnt + self.upload_file_sum_cnt + self.del_file_sum_cnt
+            op_ok_cnt = self.create_folder_ok_cnt + self.del_folder_ok_cnt + self.upload_file_ok_cnt + self.del_file_ok_cnt
+            op_fail_cnt = self.create_folder_fail_cnt + self.del_folder_fail_cnt + self.upload_file_fail_cnt + self.del_file_fail_cnt
+            if op_sum_cnt == op_ok_cnt:
                 op_status = 'ALL_OK'
-            elif (op_sum_cnt == op_fail_cnt):
+            elif op_sum_cnt == op_fail_cnt:
                 op_status = 'ALL_FAIL'
             else:
                 op_status = 'PART_OK'
@@ -529,29 +525,28 @@ class CosTaskStatics(object):
             ) values (%d, %d, %d, %d, %d, %d, '%s', %d, %d, %d, %d, %d, %d, %d,
             %d, %d, %d, %d, %d)
             ''' % record_tuple
-            if (op_sum_cnt != 0):
+            if op_sum_cnt != 0:
                 self.cx.execute(sql_update_op_table)
                 self.cx.commit()
 
-            print '\n\nsync over! op statistics:'
-            print '%30s : %s' % ('op_status', op_status)
-            print '%30s : %s' % ('create_folder_ok', self.create_folder_ok_cnt)
-            print '%30s : %s' % ('create_folder_fail', self.create_folder_fail_cnt)
-            print '%30s : %s' % ('del_folder_ok', self.del_folder_ok_cnt)
-            print '%30s : %s' % ('del_folder_fail', self.del_folder_fail_cnt)
-            print '%30s : %s' % ('upload_file_ok', self.upload_file_ok_cnt)
-            print '%30s : %s' % ('upload_file_fail', self.upload_file_fail_cnt)
-            print '%30s : %s' % ('del_file_ok', self.del_file_ok_cnt)
-            print '%30s : %s' % ('del_file_fail', self.del_file_fail_cnt)
-            print '%30s : %s' % ('start_time', time.strftime('%Y%m%d %H:%M:%S',
-                time.localtime(self.start_time)))
-            print '%30s : %s' % ('end_time', time.strftime('%Y%m%d %H:%M:%S',
-                time.localtime(self.end_time)))
-            print '%30s : %s s' % ('used_time', int(self.end_time) -
-                    int(self.start_time))
+            print('\n\nsync over! op statistics:')
+            print('%30s : %s' % ('op_status', op_status))
+            print('%30s : %s' % ('create_folder_ok', self.create_folder_ok_cnt))
+            print('%30s : %s' % ('create_folder_fail', self.create_folder_fail_cnt))
+            print('%30s : %s' % ('del_folder_ok', self.del_folder_ok_cnt))
+            print('%30s : %s' % ('del_folder_fail', self.del_folder_fail_cnt))
+            print('%30s : %s' % ('upload_file_ok', self.upload_file_ok_cnt))
+            print('%30s : %s' % ('upload_file_fail', self.upload_file_fail_cnt))
+            print('%30s : %s' % ('del_file_ok', self.del_file_ok_cnt))
+            print('%30s : %s' % ('del_file_fail', self.del_file_fail_cnt))
+            print('%30s : %s' % ('start_time', time.strftime('%Y%m%d %H:%M:%S', time.localtime(self.start_time))))
+            print('%30s : %s' % ('end_time', time.strftime('%Y%m%d %H:%M:%S', time.localtime(self.end_time))))
+            print('%30s : %s s' % ('used_time', int(self.end_time) - int(self.start_time)))
             self.lock.release()
 
+
 cos_task_statics = CosTaskStatics()
+
 
 def convert_op_ret_str(op_ret):
     op_ret_str = '{'
@@ -559,7 +554,7 @@ def convert_op_ret_str(op_ret):
     for key, value in op_ret.items():
         if not first_element:
             op_ret_str += ', '
-        if (type(value).__name__ == 'unicode'):
+        if type(value).__name__ == 'unicode':
             element_str = "'%s':'%s'" % (key, value.encode("utf-8"))
         else:
             element_str = "'%s':'%s'" % (key, value)
@@ -569,31 +564,38 @@ def convert_op_ret_str(op_ret):
     op_ret_str += '}'
     return op_ret_str
 
+
 def cos_op_success(cos_ret_dict):
     if cos_ret_dict.has_key(u'code'):
+
         if cos_ret_dict[u'code'] == 0 or cos_ret_dict[u'code'] == -4018 \
                 or cos_ret_dict[u'code'] == -178:
             return True
     return False
 
+
 def is_upload_server_error(cos_ret_dict):
     if cos_ret_dict.has_key(u'code'):
+
         if cos_ret_dict[u'code'] == -4024:
             return True
         else:
             return False
 
+
 def print_op_ok(op, op_ret, local_path):
     global cos_sync_logger
     op_ret_str = convert_op_ret_str(op_ret)
     cos_sync_logger.info("[ok]   [%13s] [%20s] [%s]" % (op, op_ret_str, local_path))
-    print '[ok]   [%13s] [%s]' % (op, local_path)
+    print('[ok]   [%13s] [%s]' % (op, local_path))
+
 
 def print_op_fail(op, op_ret, local_path):
     global cos_sync_logger
     op_ret_str = convert_op_ret_str(op_ret)
     cos_sync_logger.info("[fail] [%13s] [%20s] [%s]" % (op, op_ret_str, repr(local_path)))
-    print '[fail]   [%13s] [%s]' % (op, local_path)
+    print('[fail]   [%13s] [%s]' % (op, local_path))
+
 
 def create_folder_if_not_exist(cos_client, bucket, cos_dir):
     global cos_task_statics
@@ -612,6 +614,7 @@ def create_folder_if_not_exist(cos_client, bucket, cos_dir):
         print_op_fail("createTargetFolder", op_ret, cos_dir)
         return False
 
+
 def create_folder(cos_client, bucket, cos_path, db, file_stat):
     global cos_task_statics
     local_path = file_stat.file_path
@@ -626,6 +629,7 @@ def create_folder(cos_client, bucket, cos_path, db, file_stat):
         cos_task_statics.add_create_folder_fail()
         print_op_fail("createFolder", op_ret, local_path)
         return False
+
 
 def delete_folder(cos_client, bucket, cos_path, db, file_stat):
     global cos_task_statics
@@ -642,6 +646,7 @@ def delete_folder(cos_client, bucket, cos_path, db, file_stat):
         print_op_fail("deleteFolder", op_ret, local_path)
         return False
 
+
 def upload_file(cos_client, bucket, cos_path, db, file_stat):
     global cos_task_statics
     local_path = file_stat.file_path
@@ -653,7 +658,7 @@ def upload_file(cos_client, bucket, cos_path, db, file_stat):
     retry_max_cnt = 3
     while retry_index < retry_max_cnt:
         request = UploadFileRequest(bucket, cos_path, local_path)
-        request.set_insert_only(0) 
+        request.set_insert_only(0)
         op_ret = cos_client.upload_file(request)
         if cos_op_success(op_ret):
             db.update_record(file_stat)
@@ -670,6 +675,7 @@ def upload_file(cos_client, bucket, cos_path, db, file_stat):
         print_op_fail("uploadFile", op_ret, local_path)
         return False
 
+
 def delete_file(cos_client, bucket, cos_path, db, file_stat):
     global cos_task_statics
     local_path = file_stat.file_path
@@ -685,19 +691,19 @@ def delete_file(cos_client, bucket, cos_path, db, file_stat):
         print_op_fail("deleteFile", op_ret, local_path)
         return False
 
+
 class CosSync(object):
     def __init__(self, config):
         self.config = config
-        self.db = DbRecord(config.get_db_path(), config.get_appid(), 
-                config.get_bucket(), config.get_local_path(), config.get_cos_path())
+
+        self.db = DbRecord(config.get_db_path(), config.get_appid(), config.get_bucket(), config.get_local_path(), config.get_cos_path())
 
     def _local_path_to_cos(self, local_path):
 
-
-        cos_dir   = self.config.get_cos_path()
+        cos_dir = self.config.get_cos_path()
         local_dir = self.config.get_local_path()
-        cos_path  = cos_dir + local_path[len(local_dir):]
-        cos_path  = cos_path.replace(u'\\', u'/')
+        cos_path = cos_dir + local_path[len(local_dir):]
+        cos_path = cos_path.replace(u'\\', u'/')
         return cos_path
 
     def _create_cos_target_dir(self, cos_client, bucket):
@@ -705,9 +711,10 @@ class CosSync(object):
         return create_folder_if_not_exist(cos_client, bucket, cos_dir)
 
     def _del_cos_sync_file(self, cos_client, bucket, del_file_dict):
-        global delete_file
-        if (len(del_file_dict) == 0):
+
+        if len(del_file_dict) == 0:
             return
+
         if self.config.get_delete_sync() == 0:
             return
 
@@ -715,38 +722,40 @@ class CosSync(object):
         thread_pool = threadpool.ThreadPool(thread_worker_num)
         for del_file_path in del_file_dict.keys():
             cos_path = self._local_path_to_cos(del_file_path)
-            del_args = [cos_client, bucket, cos_path, self.db,
-                    del_file_dict[del_file_path]]
+            del_args = [cos_client, bucket, cos_path, self.db, del_file_dict[del_file_path]]
             args_tuple = (del_args, None)
             args_list = [args_tuple]
             requests = threadpool.makeRequests(delete_file, args_list)
             for req in requests:
                 thread_pool.putRequest(req)
+
         thread_pool.wait()
         thread_pool.dismissWorkers(thread_worker_num, True)
 
     def _del_cos_sync_dir(self, cos_client, bucket, del_dir_dict):
-        global delete_folder
-        if (len(del_dir_dict) == 0):
+
+        if len(del_dir_dict) == 0:
             return
+
         if self.config.get_delete_sync() == 0:
             return
 
         for del_dir_path in sorted(del_dir_dict.keys(), reverse=True):
+
             cos_path = self._local_path_to_cos(del_dir_path)
-            delete_folder(cos_client, bucket, cos_path, self.db, 
-                    del_dir_dict[del_dir_path])
+            delete_folder(cos_client, bucket, cos_path, self.db, del_dir_dict[del_dir_path])
 
     def _create_cos_sync_file(self, cos_client, bucket, create_file_dict):
-        global upload_file
-        if (len(create_file_dict) == 0):
+
+        if len(create_file_dict) == 0:
             return
+
         thread_worker_num = self.config.get_thread_num()
         thread_pool = threadpool.ThreadPool(thread_worker_num)
         for create_file_path in create_file_dict.keys():
+
             cos_path = self._local_path_to_cos(create_file_path)
-            upload_args = [cos_client, bucket, cos_path, self.db,
-                    create_file_dict[create_file_path]]
+            upload_args = [cos_client, bucket, cos_path, self.db, create_file_dict[create_file_path]]
             args_tuple = (upload_args, None)
             args_list = [args_tuple]
             requests = threadpool.makeRequests(upload_file, args_list)
@@ -757,28 +766,30 @@ class CosSync(object):
         thread_pool.dismissWorkers(thread_worker_num, True)
 
     def _create_cos_sync_dir(self, cos_client, bucket, create_dir_dict):
-        global create_folder
-        if (len(create_dir_dict) == 0):
+
+        if len(create_dir_dict) == 0:
             return
-        for create_dir_path in sorted(create_dir_dict.keys(), reverse=False):
+
+        for create_dir_path in sorted(create_dir_dict.keys()):
             cos_path = self._local_path_to_cos(create_dir_path)
-            create_folder(cos_client, bucket, cos_path, self.db,
-                    create_dir_dict[create_dir_path])
+            create_folder(cos_client, bucket, cos_path, self.db, create_dir_dict[create_dir_path])
 
     def sync(self):
+
         local_file_dir_info = LocalFileDirInfo(self.config.get_local_path())
 
         del_file_dict = self.db.file_stat_dict
-        del_dir_dict  = self.db.dir_stat_dict
+        del_dir_dict = self.db.dir_stat_dict
 
         create_file_dict = {}
-        create_dir_dict  = {}
+        create_dir_dict = {}
 
         for local_file_stat in local_file_dir_info.file_stat_list:
             local_file_path = local_file_stat.file_path
-            if (self.db.file_stat_dict.has_key(local_file_path)):
-                if (FileStat.compare(local_file_stat,
-                    self.db.file_stat_dict[local_file_path]) == 0):
+
+            if self.db.file_stat_dict.has_key(local_file_path):
+
+                if FileStat.compare(local_file_stat, self.db.file_stat_dict[local_file_path]) == 0:
                     del self.db.file_stat_dict[local_file_path]
                 else:
                     create_file_dict[local_file_path] = local_file_stat
@@ -787,16 +798,16 @@ class CosSync(object):
         
         for local_dir_stat in local_file_dir_info.dir_stat_list:
             local_dir_path = local_dir_stat.file_path
-            if (self.db.dir_stat_dict.has_key(local_dir_path)):
+            if self.db.dir_stat_dict.has_key(local_dir_path):
                 del self.db.dir_stat_dict[local_dir_path]
             else:
                 create_dir_dict[local_dir_path] = local_dir_stat
 
-        appid      = int(self.config.get_appid())
-        secret_id  = self.config.get_secret_id()
+        appid = int(self.config.get_appid())
+        secret_id = self.config.get_secret_id()
         secret_key = self.config.get_secret_key()
-        bucket     = self.config.get_bucket()
-        timeout    = self.config.get_timeout()
+        bucket = self.config.get_bucket()
+        timeout = self.config.get_timeout()
         cos_client = CosClient(appid, secret_id, secret_key)
         cos_config = CosConfig()
         cos_config.set_timeout(timeout)
@@ -805,20 +816,18 @@ class CosSync(object):
         cos_client.set_config(cos_config)
 
         self._create_cos_target_dir(cos_client, bucket)
-
         self._del_cos_sync_file(cos_client, bucket, del_file_dict)
-
         self._del_cos_sync_dir(cos_client, bucket, del_dir_dict)
-
         self._create_cos_sync_dir(cos_client, bucket, create_dir_dict)
-
         self._create_cos_sync_file(cos_client, bucket, create_file_dict)
 
 if __name__ == '__main__':
-    config = CosSyncConfig('./conf/config.json')
+
+    config = CosSyncConfig(u'config.json')
     if not config.is_valid_config():
-        print 'wrong config: ' + config.get_err_msg()
+        print('wrong config: ' + config.get_err_msg())
         sys.exit(1)
+
     while True:
         cos_task_statics.begin_collect_statics()
         cos_sync = CosSync(config)
@@ -828,5 +837,5 @@ if __name__ == '__main__':
             daemon_interval = config.get_daemon_interval()
             time.sleep(daemon_interval)
         else:
-            break;
+            break
 
