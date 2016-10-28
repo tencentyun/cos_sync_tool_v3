@@ -1,0 +1,4 @@
+threadpool==1.3.2
+qcloud-cos==3.3.6
+requests==2.11.1
+threadpool==1.3.2
